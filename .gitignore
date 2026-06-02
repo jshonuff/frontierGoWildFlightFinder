@@ -1,0 +1,24 @@
+node_modules/
+web/node_modules/
+web/dist/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# generated scrape output + debug artifacts
+data/*.json
+data/*.html
+frames/
+
+# the reference screen recording (kept locally, not in git)
+*.mp4
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
