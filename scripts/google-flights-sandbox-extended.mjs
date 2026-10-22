@@ -85,6 +85,10 @@ function browserCompare(input, top, search) {
   assert(passed,"Browser and API flight records disagreed for "+JSON.stringify(input));
 }
 const flightResults=new Map();
+const initialSearch=JSON.parse(readFileSync(join(home,"search.json"),"utf8"));
+const initialTop=JSON.parse(readFileSync(join(home,"top.json"),"utf8"));
+assert(initialSearch.ok===true&&initialTop.ok===true,"Initial validated sample missing");
+flightResults.set("MCI-LAS-2026-11-12",[...initialSearch.data,...initialTop.data]);
 for(const s of samples){
   const params={origin:s.from,destination:s.to,date:s.date};
   const search=call("search",params);
