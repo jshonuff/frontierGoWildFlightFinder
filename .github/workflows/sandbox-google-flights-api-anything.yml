@@ -169,3 +169,9 @@ jobs:
           console.log('FARE_PARITY=' + (clean ? 'PASS' : 'FAIL_OR_REPRICE'));
           if (!clean) process.exit(12);
           NODE
+
+      - name: Check out sandbox source (not production)
+        uses: actions/checkout@v5
+      - name: Run expanded multi-route checks with independent browser parity
+        shell: bash
+        run: node "$GITHUB_WORKSPACE/scripts/google-flights-sandbox-extended.mjs"
