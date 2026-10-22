@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     env:
-      API_ANYTHING_HOME: ${{ runner.temp }}/jcs-google-flights-home
+      API_ANYTHING_HOME: /tmp/jcs-google-flights-home
       JCS_PRODUCTION_DISPATCH: 'false'
       JCS_SUPABASE_WRITE_ENABLED: 'false'
       GOOGLE_ORIGIN: MCI
