@@ -1,0 +1,50 @@
+name: Sandbox Google Flights input diagnostic
+on:
+  push:
+    branches: [sandbox/google-flights-api-anything-20261022]
+    paths: ['.github/workflows/sandbox-gf-input-diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  diagnose-readonly:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    env:
+      API_ANYTHING_HOME: /tmp/gf-diagnostic-isolated
+      JCS_PRODUCTION_DISPATCH: 'false'
+      JCS_SUPABASE_WRITE_ENABLED: 'false'
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Pinned source and input diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --quiet --depth=1 https://github.com/goodnight000/api-anything.git /tmp/gf-src
+          cd /tmp/gf-src
+          git fetch --quiet --depth=1 origin 20cb677039fcfe92d3d9c777aa9362e30ff1fdb8
+          git checkout --quiet 20cb677039fcfe92d3d9c777aa9362e30ff1fdb8
+          npm ci --ignore-scripts --no-audit --no-fund >/dev/null
+          npm run build >/dev/null
+          mkdir -p "$API_ANYTHING_HOME"
+          for target in 'IAH LAX 2026-12-08' 'IAH LAX 2026-12-09'; do
+            read -r origin dest date <<<"$target"
+            set +e
+            node dist/cli.js call google-flights search "origin=$origin" "destination=$dest" "date=$date" --max-tier 1 > /tmp/gf-response.json 2>/tmp/gf-error.txt
+            status=$?
+            set -e
+            node -e 'const fs=require("fs");let r;try{r=JSON.parse(fs.readFileSync("/tmp/gf-response.json","utf8"))}catch{r={}};console.log(JSON.stringify({kind:"API_DIAGNOSTIC",target:process.argv[1],exit:Number(process.argv[2]),ok:r.ok??false,class:r.class??null,reason:r.reason?.slice(0,250)??null,items:Array.isArray(r.data)?r.data.length:0,tier:r.tier??null}))' "$target" "$status"
+            URL="https://www.google.com/travel/flights?q=Flights%20from%20$origin%20to%20$dest%20on%20$date%20one%20way&hl=en-US&gl=US&curr=USD"
+            browser=$(command -v google-chrome || command -v chromium || true)
+            if [ -n "$browser" ]; then
+              set +e
+              timeout 30 "$browser" --headless --no-sandbox --disable-gpu --no-first-run --user-data-dir="/tmp/diag-browser-${date}" --dump-dom "$URL" > /tmp/diag-page.html 2>/tmp/diag-browser.err
+              browser_status=$?
+              set -e
+              python3 -c 'import sys,re; t=open("/tmp/diag-page.html").read();print("BROWSER_DIAGNOSTIC",sys.argv[1],"exit",sys.argv[2],"bytes",len(t),"has_ds1",bool(re.search(r"key: .ds:1.",t)),"has_flights_title",("Google Flights" in t))' "$target" "$browser_status"
+            else
+              echo "BROWSER_DIAGNOSTIC unavailable"
+            fi
+          done
+          echo 'DIAGNOSTIC_COMPLETE: no auth, no booking, no canonical writes'
