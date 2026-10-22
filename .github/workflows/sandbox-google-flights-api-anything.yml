@@ -175,3 +175,29 @@ jobs:
       - name: Run expanded multi-route checks with independent browser parity
         shell: bash
         run: node "$GITHUB_WORKSPACE/scripts/google-flights-sandbox-extended.mjs"
+
+      - name: Export sanitized public flight fixture for offline handoff replay
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          node <<'JS'
+          const fs=require('node:fs'),path=require('node:path');
+          const t=process.env.RUNNER_TEMP;
+          const read=n=>JSON.parse(fs.readFileSync(path.join(t,n+'.json'),'utf8'));
+          const source={search:read('search'),top:read('top'),priceCalendar:read('priceCalendar')};
+          for(const [name,res] of Object.entries(source)){
+            if(res.ok!==true||res.class!=='ok'||res.tier!==1||!Array.isArray(res.data))throw Error('Invalid '+name);
+          }
+          const pick=f=>({airline:f.airline,price:f.price,from:f.from,to:f.to,
+            departureTime:f.departureTime,durationMinutes:f.durationMinutes,via:f.via??[]});
+          const fixture={kind:'PUBLIC_FLIGHT_SANDBOX_FIXTURE',capturedAt:new Date().toISOString(),
+            query:{origin:'MCI',destination:'LAS',date:'2026-11-12'},
+            calendarQuery:{origin:'MCI',destination:'LAS',start:'2026-11-01',end:'2026-11-30'},
+            search:source.search.data.map(pick),top:source.top.data.map(pick),
+            calendar:source.priceCalendar.data.map(x=>({date:x.date,price:x.price}))};
+          if(!fixture.search.length||!fixture.top.length||!fixture.calendar.length)throw Error('Empty fixture');
+          console.log('PUBLIC_FIXTURE_B64='+Buffer.from(JSON.stringify(fixture)).toString('base64'));
+          console.log('PUBLIC_FIXTURE_COUNTS='+JSON.stringify({
+            search:fixture.search.length,top:fixture.top.length,calendar:fixture.calendar.length
+          }));
+          JS
