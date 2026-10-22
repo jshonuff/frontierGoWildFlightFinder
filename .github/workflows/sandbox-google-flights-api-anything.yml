@@ -104,3 +104,68 @@ jobs:
             grep -q 'Google Flights' "$RUNNER_TEMP/browser.html" && echo "BROWSER_FLIGHTS_PAGE=true" || echo "BROWSER_FLIGHTS_PAGE=false"
           fi
           echo "PRICE_PARITY=UNVERIFIED; requires comparable parsed fare records, not only an HTML response"
+      - name: Independently reconcile browser-loaded page data with API results
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const dir = process.env.RUNNER_TEMP;
+          const htmlPath = path.join(dir, 'browser.html');
+          if (!fs.existsSync(htmlPath)) throw new Error('Browser HTML absent; cannot verify parity');
+          const html = fs.readFileSync(htmlPath, 'utf8');
+          const pattern = /key:\s*'ds:1',\s*hash:\s*'\d+',\s*data:\s*(\[)/;
+          const match = pattern.exec(html);
+          if (!match) throw new Error('Google Flights ds:1 data missing from independent browser snapshot');
+          let idx = match.index + match[0].lastIndexOf('[');
+          const begin = idx;
+          let depth = 0, quoted = false, escape = false, finished = -1;
+          for (; idx < html.length; idx++) {
+            const ch = html[idx];
+            if (quoted) {
+              if (escape) { escape = false; continue; }
+              if (ch === '\\') { escape = true; continue; }
+              if (ch === '"') quoted = false;
+              continue;
+            }
+            if (ch === '"') { quoted = true; continue; }
+            if (ch === '[') depth++;
+            if (ch === ']' && --depth === 0) { finished = idx; break; }
+          }
+          if (finished < 0) throw new Error('Browser data array did not close');
+          const root = JSON.parse(html.slice(begin, finished + 1));
+          const readGroup = items => (items || []).map(item => ({
+            airline: item?.[0]?.[1],
+            price: item?.[1]?.[0]?.[1],
+            from: item?.[0]?.[3],
+            to: item?.[0]?.[6],
+            departureTime: item?.[0]?.[5],
+            durationMinutes: item?.[0]?.[9]
+          }));
+          const sig = x => JSON.stringify([
+            x.airline, x.price, x.from, x.to, x.departureTime, x.durationMinutes
+          ]);
+          let clean = true;
+          for (const [name, index] of [['top',2],['search',3]]) {
+            const pageItems = readGroup(root?.[index]?.[0]);
+            const apiPayload = JSON.parse(fs.readFileSync(path.join(dir, name + '.json'),'utf8'));
+            const apiItems = apiPayload?.data;
+            if (!Array.isArray(apiItems)) throw new Error(name + ' API items missing');
+            const a = pageItems.map(sig).sort();
+            const b = apiItems.map(sig).sort();
+            const matchAll = JSON.stringify(a) === JSON.stringify(b);
+            console.log('PARITY_GROUP=' + name +
+              ' browser_items=' + a.length +
+              ' api_items=' + b.length +
+              ' exact_match=' + matchAll);
+            if (!matchAll) {
+              clean = false;
+              console.log('BROWSER_SAMPLE=' + JSON.stringify(pageItems.slice(0,2)));
+              console.log('API_SAMPLE=' + JSON.stringify(apiItems.slice(0,2)));
+            }
+          }
+          console.log('FARE_PARITY=' + (clean ? 'PASS' : 'FAIL_OR_REPRICE'));
+          if (!clean) process.exit(12);
+          NODE
