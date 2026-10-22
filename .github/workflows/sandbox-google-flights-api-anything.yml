@@ -177,6 +177,7 @@ jobs:
         run: node "$GITHUB_WORKSPACE/scripts/google-flights-sandbox-extended.mjs"
 
       - name: Export sanitized public flight fixture for offline handoff replay
+        if: always()
         shell: bash
         run: |
           set -Eeuo pipefail
