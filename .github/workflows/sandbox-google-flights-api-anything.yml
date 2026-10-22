@@ -1,0 +1,106 @@
+name: Sandbox Google Flights API Anything (read-only)
+on:
+  push:
+    branches:
+      - sandbox/google-flights-api-anything-20261022
+    paths:
+      - '.github/workflows/sandbox-google-flights-api-anything.yml'
+permissions:
+  contents: read
+concurrency:
+  group: sandbox-google-flights-api-anything
+  cancel-in-progress: true
+jobs:
+  public-readonly:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      API_ANYTHING_HOME: ${{ runner.temp }}/jcs-google-flights-home
+      JCS_PRODUCTION_DISPATCH: 'false'
+      JCS_SUPABASE_WRITE_ENABLED: 'false'
+      GOOGLE_ORIGIN: MCI
+      GOOGLE_DESTINATION: LAS
+      GOOGLE_FLIGHT_DATE: '2026-11-12'
+      GOOGLE_CAL_START: '2026-11-01'
+      GOOGLE_CAL_END: '2026-11-30'
+    steps:
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check out pinned public upstream in disposable directory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git clone --quiet https://github.com/goodnight000/api-anything.git "$RUNNER_TEMP/api-anything"
+          cd "$RUNNER_TEMP/api-anything"
+          git checkout --quiet 20cb677039fcfe92d3d9c777aa9362e30ff1fdb8
+          test "$(git rev-parse HEAD)" = "20cb677039fcfe92d3d9c777aa9362e30ff1fdb8"
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          echo "Pinned upstream commit verified."
+      - name: Verify read-only Google Flights contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$RUNNER_TEMP/api-anything"
+          mkdir -p "$API_ANYTHING_HOME"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          const s=JSON.parse(fs.readFileSync('sites/google-flights.json','utf8'));
+          const want={search:'GET',top:'GET',priceCalendar:'POST'};
+          if (s.operations.length!==3) throw Error('Unexpected operations');
+          for (const op of s.operations){
+            if(op.request.method!==want[op.name]) throw Error('Unexpected method '+op.name);
+            const url=new URL(op.request.url);
+            if(url.protocol!=='https:'||url.hostname!=='www.google.com')throw Error('Unexpected host');
+            if(!op.response?.pick?.length)throw Error('Missing fields');
+            if(op.request.headers?.authorization||op.request.headers?.cookie)throw Error('Credential header');
+          }
+          console.log('SPEC_CHECK_PASS: search GET, top GET, calendar read-only POST; google-only; no auth or cookie headers');
+          JS
+      - name: Run three public one-way Google Flights calls
+        shell: bash
+        run: |
+          set -uo pipefail
+          cd "$RUNNER_TEMP/api-anything"
+          failure=0
+          for op in search top priceCalendar; do
+            start=$(date +%s%3N)
+            if [ "$op" = priceCalendar ]; then
+              node dist/cli.js call google-flights "$op" origin=MCI destination=LAS start=2026-11-01 end=2026-11-30 --max-tier 1 > "$RUNNER_TEMP/$op.json" 2> "$RUNNER_TEMP/$op.stderr"
+            else
+              node dist/cli.js call google-flights "$op" origin=MCI destination=LAS date=2026-11-12 --max-tier 1 > "$RUNNER_TEMP/$op.json" 2> "$RUNNER_TEMP/$op.stderr"
+            fi
+            code=$?
+            finish=$(date +%s%3N)
+            echo "OPERATION=$op EXIT=$code ELAPSED_MS=$((finish-start))"
+            node -e 'let fs=require("fs");let t=fs.readFileSync(process.argv[1],"utf8");try{let x=JSON.parse(t);let d=x.data;console.log(JSON.stringify({ok:x.ok,class:x.class,tier:x.tier,ms:x.ms,items:Array.isArray(d)?d.length:null,first_three:Array.isArray(d)?d.slice(0,3):undefined,error:x.reason??null}))}catch(e){console.log("UNPARSEABLE_OUTPUT",t.slice(0,800))}' "$RUNNER_TEMP/$op.json"
+            if [ "$code" -ne 0 ]; then
+              failure=1
+              echo "ERROR_DETAIL_BEGIN $op"
+              head -c 900 "$RUNNER_TEMP/$op.stderr"
+              echo
+              echo "ERROR_DETAIL_END $op"
+            fi
+          done
+          echo "API_ANYTHING_OPERATIONS_FAILED=$failure"
+          if [ "$failure" -ne 0 ]; then exit 11; fi
+      - name: Read-only browser comparator (no credentials)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          BROWSER=$(command -v google-chrome || command -v chromium || true)
+          if [ -z "$BROWSER" ]; then echo "BROWSER_UNAVAILABLE"; exit 0; fi
+          URL='https://www.google.com/travel/flights?q=Flights%20from%20MCI%20to%20LAS%20on%202026-11-12%20one%20way&hl=en-US&gl=US&curr=USD'
+          start=$(date +%s%3N)
+          timeout 45 "$BROWSER" --headless --no-sandbox --disable-gpu --no-first-run --user-data-dir="$RUNNER_TEMP/chrome-public-sandbox" --dump-dom "$URL" > "$RUNNER_TEMP/browser.html" 2> "$RUNNER_TEMP/browser.err"
+          code=$?
+          finish=$(date +%s%3N)
+          BYTES=$(wc -c < "$RUNNER_TEMP/browser.html")
+          echo "BROWSER_EXIT=$code ELAPSED_MS=$((finish-start)) BYTES=$BYTES"
+          if [ "$code" -eq 0 ]; then
+            grep -q 'Google Flights' "$RUNNER_TEMP/browser.html" && echo "BROWSER_FLIGHTS_PAGE=true" || echo "BROWSER_FLIGHTS_PAGE=false"
+          fi
+          echo "PRICE_PARITY=UNVERIFIED; requires comparable parsed fare records, not only an HTML response"
